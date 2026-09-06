@@ -1,0 +1,18 @@
+name = "supply-chain-auditor-dispatcher"
+main = "index.js"
+compatibility_date = "2026-01-01"
+
+# Bind the D1 database (create with: wrangler d1 create supply-chain-db)
+[[d1_databases]]
+binding = "DB"
+database_name = "supply-chain-db"
+database_id = "REPLACE_WITH_YOUR_D1_DATABASE_ID"
+
+# Bind the R2 bucket (create with: wrangler r2 bucket create supply-chain-artifacts)
+[[r2_buckets]]
+binding = "ARTIFACTS"
+bucket_name = "supply-chain-artifacts"
+
+# The backend URL is set as a secret so it's not committed to git:
+#   wrangler secret put BACKEND_URL
+# (paste your Render/Fly.io backend URL, e.g. https://your-app.onrender.com)

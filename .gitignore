@@ -1,0 +1,21 @@
+# Environment secrets — never commit these
+*.env
+.env.local
+
+# Virtual environment
+cld/
+
+# Project-specific excluded folder
+stuff/
+stuff.txt
+test data/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Editor/OS junk
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
