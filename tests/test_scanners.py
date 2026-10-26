@@ -110,6 +110,9 @@ uvicorn[standard]==0.30
 
 def test_typosquat_only_requirements_files(tmp_path):
     assert not TyposquatScanner().applies(make_artifact(tmp_path, "notes.txt", b"tensrflow"))
+    assert TyposquatScanner().applies(make_artifact(tmp_path, "a1b2c3d4e5f6-requirements.txt", b"x"))
+    assert TyposquatScanner().applies(make_artifact(tmp_path, "requirements-dev.txt", b"x"))
+    assert not TyposquatScanner().applies(make_artifact(tmp_path, "myrequirements.txt", b"x"))
     assert nearest_popular("numpi") == "numpy"
 
 

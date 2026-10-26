@@ -30,7 +30,8 @@ KNOWN_LEGIT = {
 }
 
 NAME_RE = re.compile(r"^\s*([A-Za-z0-9][A-Za-z0-9._-]*)")
-REQUIREMENTS_NAME_RE = re.compile(r"^requirements[\w.-]*\.(txt|in)$", re.IGNORECASE)
+# The dashboard stores uploads as "<random>-<name>", so allow that prefix.
+REQUIREMENTS_NAME_RE = re.compile(r"(?:^|[-_])requirements[\w.-]*\.(txt|in)$", re.IGNORECASE)
 
 
 def normalize(name: str) -> str:
@@ -75,7 +76,7 @@ class TyposquatScanner(Scanner):
     name = "typosquat_check"
 
     def applies(self, artifact: Artifact) -> bool:
-        return bool(REQUIREMENTS_NAME_RE.match(artifact.filename))
+        return bool(REQUIREMENTS_NAME_RE.search(artifact.filename))
 
     def scan(self, artifact: Artifact) -> Finding:
         suspicious = []
