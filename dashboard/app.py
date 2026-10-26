@@ -10,7 +10,12 @@ the visual identity used across this portfolio's other AI Security
 projects (llm-security-gateway, trust-gate).
 """
 
+import html
 import os
+import re
+import time
+import uuid
+
 import requests
 import streamlit as st
 from datetime import datetime, timezone
@@ -20,6 +25,32 @@ load_dotenv()
 
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
 SUPABASE_ANON_KEY = os.environ.get("SUPABASE_ANON_KEY", "")
+BUCKET = "supply-chain-artifacts"
+MAX_UPLOAD_BYTES = 50 * 1024 * 1024        # matches the bucket's file_size_limit
+UPLOADS_PER_WINDOW = 5                      # per browser session
+UPLOAD_WINDOW_SECONDS = 600
+
+HEADERS = {"apikey": SUPABASE_ANON_KEY, "Authorization": f"Bearer {SUPABASE_ANON_KEY}"}
+
+
+def esc(value) -> str:
+    """Everything shown via unsafe_allow_html comes from uploaders
+    (file names, package names) — escape it, always."""
+    return html.escape(str(value), quote=True)
+
+
+def storage_key_for(filename: str) -> str:
+    """Random prefix + sanitized name: no path tricks, no collisions,
+    no overwriting someone else's upload."""
+    safe = re.sub(r"[^A-Za-z0-9._-]", "_", filename).strip("._") or "file"
+    return f"{uuid.uuid4().hex[:12]}-{safe[:100]}"
+
+
+def upload_allowed() -> bool:
+    now = time.time()
+    recent = [t for t in st.session_state.get("upload_times", []) if now - t < UPLOAD_WINDOW_SECONDS]
+    st.session_state["upload_times"] = recent
+    return len(recent) < UPLOADS_PER_WINDOW
 
 st.set_page_config(
     page_title="Supply Chain Auditor",
@@ -286,10 +317,7 @@ st.markdown("""
 try:
     response = requests.get(
         f"{SUPABASE_URL}/rest/v1/scan_results",
-        headers={
-            "apikey": SUPABASE_ANON_KEY,
-            "Authorization": f"Bearer {SUPABASE_ANON_KEY}",
-        },
+        headers=HEADERS,
         params={"order": "scanned_at.desc", "limit": 50},
         timeout=10,
     )
@@ -299,6 +327,18 @@ try:
 except Exception as e:
     results = []
     fetch_error = str(e)
+
+try:
+    jobs_response = requests.get(
+        f"{SUPABASE_URL}/rest/v1/scan_jobs",
+        headers=HEADERS,
+        params={"status": "in.(pending,running,failed)", "order": "created_at.desc", "limit": 20},
+        timeout=10,
+    )
+    jobs_response.raise_for_status()
+    open_jobs = jobs_response.json()
+except Exception:
+    open_jobs = []
 
 
 def classify(score: int) -> str:
@@ -354,33 +394,27 @@ if uploaded_file is not None:
     with col1:
         scan_clicked = st.button(f"Scan '{uploaded_file.name}'", type="primary")
     if scan_clicked:
-        with st.spinner("Uploading — the automated scan pipeline runs in the background..."):
-            upload_url = f"{SUPABASE_URL}/storage/v1/object/supply-chain-artifacts/{uploaded_file.name}"
-            try:
-                upload_response = requests.post(
-                    upload_url,
-                    headers={
-                        "Authorization": f"Bearer {SUPABASE_ANON_KEY}",
-                        "apikey": SUPABASE_ANON_KEY,
-                        "Content-Type": uploaded_file.type or "application/octet-stream",
-                    },
-                    data=uploaded_file.getvalue(),
-                    timeout=30,
-                )
-                if upload_response.status_code in (200, 201):
-                    st.success(
-                        f"'{uploaded_file.name}' uploaded — scan runs automatically. "
-                        "Refresh in ~15 seconds to see the result."
+        if uploaded_file.size > MAX_UPLOAD_BYTES:
+            st.error(f"File is larger than {MAX_UPLOAD_BYTES // (1024 * 1024)} MB.")
+        elif not upload_allowed():
+            st.error("Upload limit reached — try again in a few minutes.")
+        else:
+            key = storage_key_for(uploaded_file.name)
+            with st.spinner("Uploading — the automated scan pipeline runs in the background..."):
+                try:
+                    upload_response = requests.post(
+                        f"{SUPABASE_URL}/storage/v1/object/{BUCKET}/{key}",
+                        headers={**HEADERS, "Content-Type": "application/octet-stream"},
+                        data=uploaded_file.getvalue(),
+                        timeout=60,
                     )
-                elif "Duplicate" in upload_response.text or "already exists" in upload_response.text.lower():
-                    st.error(
-                        f"'{uploaded_file.name}' already exists in the bucket. "
-                        "Rename the file to scan it as a new artifact."
-                    )
-                else:
-                    st.error(f"Upload failed ({upload_response.status_code}): {upload_response.text}")
-            except Exception as e:
-                st.error(f"Upload error: {e}")
+                    if upload_response.status_code in (200, 201):
+                        st.session_state["upload_times"].append(time.time())
+                        st.success(f"Uploaded as '{key}' — the scan is queued. Refresh in ~15 seconds.")
+                    else:
+                        st.error(f"Upload failed ({upload_response.status_code}).")
+                except Exception as e:
+                    st.error(f"Upload error: {e}")
 
 st.write("")
 
@@ -394,6 +428,17 @@ with button_col:
     if st.button("↻ Refresh"):
         st.rerun()
 
+if open_jobs:
+    st.markdown('<div class="soc-section-title">Queue</div>', unsafe_allow_html=True)
+    for job in open_jobs:
+        note = f" — {esc(job['last_error'])}" if job.get("last_error") else ""
+        st.markdown(
+            f'<div class="finding-line"><span class="finding-check">{esc(job.get("status"))}</span> '
+            f'{esc(job.get("object_key"))} · attempt {esc(job.get("attempts", 0))}{note}</div>',
+            unsafe_allow_html=True,
+        )
+    st.write("")
+
 if fetch_error:
     st.error(f"Could not fetch results: {fetch_error}")
 elif not results:
@@ -401,7 +446,7 @@ elif not results:
 else:
     for row in results:
         findings = row.get("findings", [])
-        risk = row.get("risk_score", 0)
+        risk = int(row.get("risk_score") or 0)
         level = classify(risk)
         object_key = row.get("object_key", "unknown")
         scanned_at = row.get("scanned_at", "")
@@ -417,8 +462,8 @@ else:
             for f in findings:
                 findings_html += (
                     f'<div class="finding-line">'
-                    f'<span class="finding-check">{f.get("check", "check")}</span><br/>'
-                    f'{f.get("detail", "")}'
+                    f'<span class="finding-check">{esc(f.get("check", "check"))}</span><br/>'
+                    f'{esc(f.get("detail", ""))}'
                     f'</div>'
                 )
         else:
@@ -427,10 +472,10 @@ else:
         st.markdown(f"""
         <div class="result-card risk-{level}">
             <div class="result-header">
-                <span class="result-filename">{object_key}</span>
-                <span class="risk-pill {level}">{level} · {risk}</span>
+                <span class="result-filename">{esc(object_key)}</span>
+                <span class="risk-pill {level}">{level} · {esc(risk)}</span>
             </div>
-            <div class="result-meta">{time_str}</div>
+            <div class="result-meta">{esc(time_str)}</div>
             {findings_html}
         </div>
         """, unsafe_allow_html=True)
